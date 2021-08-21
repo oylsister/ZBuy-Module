@@ -23,11 +23,11 @@
 #include <cstrike>
 #include <multicolors>
 #include <zombiereloaded>
-#include <zbuy>
+//#include <zbuy>
 
 #pragma newdecls required
 
-enum stuct Weapons
+enum struct Weapons
 {
 	char sWeaponName[64];
 	char sWeaponentity[64];
@@ -55,6 +55,8 @@ enum Type_Weapon
 
 Handle g_hZbuyPurchaseCount[MAXPLAYERS+1];
 
+char sZbuyPrefix[64];
+
 Weapons g_Weapons[64];
 
 ConVar g_Cvar_Enable, 
@@ -77,13 +79,13 @@ public Plugin myinfo =
 
 public void OnPluginStart()
 {
-	RegConsoleCmd("sm_zbuy", ZBuyMenuCommand);
+	//RegConsoleCmd("sm_zbuy", ZBuyMenuCommand);
 	
 	g_Cvar_Enable = CreateConVar("sm_zbuy_enable", "1.0", "Enable ZBuy Module plugins", _, true, 0.0, true, 1.0);
 	g_Cvar_Hook_BuyZone = CreateConVar("sm_zbuy_hook_buyzone", "1.0", "Hook on player purchase weapon with 'b' key on buyzone or not", _, true, 0.0, true, 1.0);
 	g_Cvar_Prefix = CreateConVar("sm_zbuy_prefix", "{green}[Zbuy]{default}", "Prefix for Zbuy Module");
 	
-	HookConVarChange(g_Cvar_Enable, OnConVarChage);
+	HookConVarChange(g_Cvar_Enable, OnConVarChange);
 	HookConVarChange(g_Cvar_Hook_BuyZone, OnConVarChange);
 	HookConVarChange(g_Cvar_Hook_BuyZone, OnConVarChange);
 	
@@ -101,7 +103,7 @@ public void OnConfigsExecuted()
 	GetConVar();
 }
 
-public void OnClientPutInServer()
+public void OnClientPutInServer(int client)
 {
 	if (g_hZbuyPurchaseCount[client] != INVALID_HANDLE)
 	{
@@ -110,7 +112,7 @@ public void OnClientPutInServer()
 	g_hZbuyPurchaseCount[client] = CreateTrie();
 }
 
-public void OnClientDisconnect()
+public void OnClientDisconnect(int client)
 {
 	if (g_hZbuyPurchaseCount[client] != INVALID_HANDLE)
 	{
@@ -119,7 +121,7 @@ public void OnClientDisconnect()
 	g_hZbuyPurchaseCount[client] = INVALID_HANDLE;
 }
 
-public void OnConVarChage(ConVar cvar, const char[] oldvalue, const char[] newvalue)
+public void OnConVarChange(ConVar cvar, const char[] oldvalue, const char[] newvalue)
 {
 	if(cvar == g_Cvar_Enable)
 		g_bEnable = GetConVarBool(g_Cvar_Enable);
@@ -159,13 +161,13 @@ void LoadConfig()
 			KvGetString(kv, "restrictdefault", sTemp, sizeof(sTemp));
 			
 			if(StrEqual(sTemp, "yes", false))
-				g_iWeapons[g_iWeapons].bAllow = false;
+				g_Weapons[g_iWeapons].bAllow = false;
 			
 			else if(StrEqual(sTemp, "no", false))
-				g_iWeapons[g_iWeapons].bAllow = true;
+				g_Weapons[g_iWeapons].bAllow = true;
 				
 			else
-				g_iWeapons[g_iWeapons].bAllow = true;
+				g_Weapons[g_iWeapons].bAllow = true;
 				
 			g_Weapons[g_iWeapons].iPrice = KvGetNum(kv, "zmarketprice", -1);
 			g_Weapons[g_iWeapons].iMaxPurchase = KvGetNum(kv, "zmarketpurchasemax", 0);
@@ -174,21 +176,23 @@ void LoadConfig()
 			KvGetString(kv, "multipriceenable", sTemp, sizeof(sTemp));
 			
 			if(StrEqual(sTemp, "yes", false))
-				g_iWeapons[g_iWeapons].bMulti = true;
+				g_Weapons[g_iWeapons].bMulti = true;
 			
 			else if(StrEqual(sTemp, "no", false))
-				g_iWeapons[g_iWeapons].bMulti = false;
+				g_Weapons[g_iWeapons].bMulti = false;
 				
 			else
-				g_iWeapons[g_iWeapons].bMulti = false;
+				g_Weapons[g_iWeapons].bMulti = false;
 				
-			if(g_iWeapons[g_iWeapons].bMulti)
-				g_iWeapons[g_iWeapons].fMulti = KvGetFloat(kv, "multiprice", -1);
+			if(g_Weapons[g_iWeapons].bMulti)
+				g_Weapons[g_iWeapons].fMulti = KvGetFloat(kv, "multiprice", -1.0);
 				
 			else
-				g_iWeapons[g_iWeapons].fMulti = 1.0;
+				g_Weapons[g_iWeapons].fMulti = 1.0;
 		}
+		while (KvGotoNextKey(kv));
 	}
+	delete kv;
 }
 
 public void OnPlayerSpawn(Event event, const char[] name, bool dontBroadcast)
@@ -316,7 +320,7 @@ public void ZBuyEquipWeapon(int client, const char[] weapon)
 	
 	for (int i = 0; i < g_iWeapons; i++)
 	{
-		if(StrEqual(weapon, g_Weapons[i].sWeaponentity, false)
+		if(StrEqual(weapon, g_Weapons[i].sWeaponentity, false))
 		{
 			if(!g_Weapons[i].bAllow)
 			{
@@ -333,7 +337,7 @@ public void ZBuyEquipWeapon(int client, const char[] weapon)
 					if(iCash > g_Weapons[i].iPrice)
 					{
 						SetEntProp(client, Prop_Send, "m_iAccount", iCash - g_Weapons[i].iPrice);
-						GivePlayerItem(client, g_Weapons[i].weapon);
+						GivePlayerItem(client, weapon);
 						CPrintToChat(client, "%s You have bought \x04\"%s\" \x01type command \x05\"%s\" \x01on chat to rebuy again", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].sWeaponCommand);
 						return;
 					}
@@ -347,7 +351,7 @@ public void ZBuyEquipWeapon(int client, const char[] weapon)
 				// Have limit
 				else if(g_Weapons[i].iMaxPurchase > 0)
 				{
-					int iBuyCount = GetPurchaseCount(client, g_Weapons[i].sWeaponName)
+					int iBuyCount = GetPurchaseCount(client, g_Weapons[i].sWeaponName);
 					int iLeft = g_Weapons[i].iMaxPurchase - iBuyCount;
 					if(iLeft > 0)
 					{
@@ -382,7 +386,7 @@ public void ZBuyEquipWeapon(int client, const char[] weapon)
 		
 			else if(g_Weapons[i].bMulti)
 			{
-				int iBuyCount = GetPurchaseCount(client, g_Weapons[i].sWeaponName)
+				int iBuyCount = GetPurchaseCount(client, g_Weapons[i].sWeaponName);
 				// Not buy anything yet
 				if(iBuyCount == 0)
 				{
@@ -513,7 +517,7 @@ int GetPurchaseCount(int client, const char[] weapon)
 
 void ZBuyResetPurchaseCount(int client)
 {
-	if (g_hZBuPurchaseCount[client] != INVALID_HANDLE)
+	if (g_hZbuyPurchaseCount[client] != INVALID_HANDLE)
 	{
 		ClearTrie(g_hZbuyPurchaseCount[client]);
 	}
@@ -525,7 +529,7 @@ stock bool IsWeaponInConfigFile(const char[] weapon)
 	for (int i = 0; i < g_iWeapons; i++)
 	{
 		char sTemp[64];
-		Format(sTemp, sizeof(sTemp), "%s", g_Weapons[i].sWeaponentity)
+		Format(sTemp, sizeof(sTemp), "%s", g_Weapons[i].sWeaponentity);
 		if(StrEqual(weapon, sTemp, false))
 		{
 			iFound++; 
@@ -535,4 +539,6 @@ stock bool IsWeaponInConfigFile(const char[] weapon)
 	
 	if(iFound == 0)
 		return false;
+		
+	return false;
 }
