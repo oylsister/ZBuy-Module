@@ -1,3 +1,20 @@
+/*	
+	zbuy.sp Copyright (C) 2021 Oylsister
+	
+	This program is free software: you can redistribute it and/or modify
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation, either version 3 of the License, or
+	(at your option) any later version.
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+	GNU General Public License for more details.
+	
+	You should have received a copy of the GNU General Public License
+	along with this program. If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
 #pragma semicolon 1
 
 #include <sourcemod>
@@ -32,12 +49,20 @@ enum Type_Weapon
 	TYPE_SMG,
 	TYPE_RIFLE,
 	TYPE_SNIPER,
-	TYPE_MACHINEGUN
+	TYPE_MACHINEGUN,
+	TYPE_KEVLAR
 }
 
 Handle g_hZbuyPurchaseCount[MAXPLAYERS+1];
 
 Weapons g_Weapons[64];
+
+ConVar g_Cvar_Enable, 
+	g_Cvar_Hook_BuyZone, 
+	g_Cvar_Prefix;
+
+bool g_bEnable;
+bool g_bHookBuyZone;
 
 int g_iWeapons;
 
@@ -47,19 +72,33 @@ public Plugin myinfo =
 	author = "Oylsister", 
 	description = "Custom weapon buy menu for Zombie:Reloaded", 
 	version = "1.0", 
-	url = ""
+	url = "https://github.com/oylsister/ZBuy-Module"
 };
 
 public void OnPluginStart()
 {
 	RegConsoleCmd("sm_zbuy", ZBuyMenuCommand);
-	LoadTranslations("zbuy.pharese");
+	
+	g_Cvar_Enable = CreateConVar("sm_zbuy_enable", "1.0", "Enable ZBuy Module plugins", _, true, 0.0, true, 1.0);
+	g_Cvar_Hook_BuyZone = CreateConVar("sm_zbuy_hook_buyzone", "1.0", "Hook on player purchase weapon with 'b' key on buyzone or not", _, true, 0.0, true, 1.0);
+	g_Cvar_Prefix = CreateConVar("sm_zbuy_prefix", "{green}[Zbuy]{default}", "Prefix for Zbuy Module");
+	
+	HookConVarChange(g_Cvar_Enable, OnConVarChage);
+	HookConVarChange(g_Cvar_Hook_BuyZone, OnConVarChange);
+	HookConVarChange(g_Cvar_Hook_BuyZone, OnConVarChange);
+	
+	HookEvent("player_spawn", OnPlayerSpawn);
+	
+	AutoExecConfig(true, "zbuy_module", "sourcemod/zombiereloaded");
+	
+	//LoadTranslations("zbuy.pharese");
 }
 
 public void OnConfigsExecuted()
 {
 	LoadConfig();
 	OnCreateZBuyCommand();
+	GetConVar();
 }
 
 public void OnClientPutInServer()
@@ -80,6 +119,25 @@ public void OnClientDisconnect()
 	g_hZbuyPurchaseCount[client] = INVALID_HANDLE;
 }
 
+public void OnConVarChage(ConVar cvar, const char[] oldvalue, const char[] newvalue)
+{
+	if(cvar == g_Cvar_Enable)
+		g_bEnable = GetConVarBool(g_Cvar_Enable);
+		
+	else if(cvar == g_Cvar_Hook_BuyZone)
+		g_bHookBuyZone = GetConVarBool(g_Cvar_Hook_BuyZone);
+		
+	else if(cvar == g_Cvar_Prefix)
+		GetConVarString(g_Cvar_Prefix, sZbuyPrefix, sizeof(sZbuyPrefix));
+}
+
+void GetConVar()
+{
+	g_bEnable = GetConVarBool(g_Cvar_Enable);
+	g_bHookBuyZone = GetConVarBool(g_Cvar_Hook_BuyZone);
+	GetConVarString(g_Cvar_Prefix, sZbuyPrefix, sizeof(sZbuyPrefix));
+}
+
 void LoadConfig()
 {
 	g_iWeapons = 0;
@@ -87,7 +145,7 @@ void LoadConfig()
 	
 	char sConfig[PLATFORM_MAX_PATH];
 	BuildPath(Path_SM, sConfig, sizeof(sConfig), "configs/zr/weapons.txt");
-	KeyValues kv = CreateKeyValues("zbuy");
+	KeyValues kv = CreateKeyValues("weapons");
 	
 	FileToKeyValues(kv, sConfig);
 	
@@ -133,6 +191,43 @@ void LoadConfig()
 	}
 }
 
+public void OnPlayerSpawn(Event event, const char[] name, bool dontBroadcast)
+{
+	int client = GetClientOfUserId(GetEventInt(event, "userid"));
+	
+	CreateTimer(0.1, ResetZBuyPurchaseCountTimer, client);
+}
+
+public Action ResetZBuyPurchaseCountTimer(Handle timer, any client)
+{
+	if(!IsClientInGame(client))
+	{
+		return;
+	}
+	ZBuyResetPurchaseCount(client);
+}
+
+public Action CS_OnBuyCommand(int client, const char[] weapon)
+{
+	if(g_bEnable)
+	{
+		if(g_bHookBuyZone)
+		{
+			if(IsWeaponInConfigFile(weapon))
+			{
+				ZBuyEquipWeapon(client, weapon);
+				return Plugin_Handled;
+			}
+			else
+			{
+				return Plugin_Continue;
+			}
+		}
+		return Plugin_Continue;
+	}
+	return Plugin_Continue;
+}
+
 public void OnCreateZBuyCommand()
 {
 	for (int i = 0; i < g_iWeapons; i++)
@@ -161,6 +256,18 @@ public void OnCreateZBuyCommand()
 
 public Action ZBuyCommand(int client, int args)
 {
+	if(!IsPlayerAlive(client))
+	{
+		CReplyToCommand(client, "%s You must be alive to purchase the weapons!", sZbuyPrefix);
+		return Plugin_Handled;
+	}
+	
+	if(ZR_IsClientZombie(client))
+	{
+		CReplyToCommand(client, "%s This feature is only for human!", sZbuyPrefix);
+		return Plugin_Handled;
+	}
+	
 	char sCommand[128];
 	
 	GetCmdArg(0, sCommand, sizeof(sCommand));
@@ -209,85 +316,177 @@ public void ZBuyEquipWeapon(int client, const char[] weapon)
 	
 	for (int i = 0; i < g_iWeapons; i++)
 	{
-		if(!g_Weapons[i].bAllow)
+		if(StrEqual(weapon, g_Weapons[i].sWeaponentity, false)
 		{
-			PrintToChat(client, "%s \x04\"%s\" \x01is currently restricted", sZbuyPrefix, g_Weapons[i].sWeaponName);
-			return;
-		}
-		
-		// No Multi Price
-		if(!g_Weapons[i].bMulti)
-		{
-			// No limit
-			if(g_Weapons[i].iMaxPurchase == 0)
+			if(!g_Weapons[i].bAllow)
 			{
-				if(iCash > g_Weapons[i].iPrice)
-				{
-					SetEntProp(client, Prop_Send, "m_iAccount", iCash - g_Weapons[i].iPrice);
-					GivePlayerItem(client, g_Weapons[i].weapon);
-					PrintToChat(client, "%s You have bought \x04\"%s\" \x01type command \x05\"%s\" \x01on chat to rebuy again", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].sWeaponCommand);
-					return;
-				}
-				else
-				{
-					PrintToChat(client, "%s You don't have enough money to purchase \x04\"%s\" \x01right now. (Price:\x05%d\x01)", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].iPrice);
-					return;
-				}
+				CPrintToChat(client, "%s \x04\"%s\" \x01is currently restricted", sZbuyPrefix, g_Weapons[i].sWeaponName);
+				return;
 			}
-			
-			// Have limit
-			else if(g_Weapons[i].iMaxPurchase > 0)
+		
+			// No Multi Price
+			if(!g_Weapons[i].bMulti)
 			{
-				int iBuyCount = GetPurchaseCount(client, g_Weapons[i].sWeaponName)
-				int iLeft = g_Weapons[i].iMaxPurchase - iBuyCount;
-				if(iLeft > 0)
+				// No limit
+				if(g_Weapons[i].iMaxPurchase == 0)
 				{
 					if(iCash > g_Weapons[i].iPrice)
 					{
 						SetEntProp(client, Prop_Send, "m_iAccount", iCash - g_Weapons[i].iPrice);
-						SetPurchaseCount(client, g_Weapons[i].sWeaponName, 1, true);
 						GivePlayerItem(client, g_Weapons[i].weapon);
-						PrintToChat(client, "%s You have bought \x04\"%s\" \x01you can re-purchase this item \x05%d \x01times. type command \x05\"%s\" \x01on chat to rebuy again", sZbuyPrefix, g_Weapons[i].sWeaponName, iBuyCount, g_Weapons[i].sWeaponCommand);
+						CPrintToChat(client, "%s You have bought \x04\"%s\" \x01type command \x05\"%s\" \x01on chat to rebuy again", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].sWeaponCommand);
 						return;
 					}
 					else
 					{
-						PrintToChat(client, "%s You don't have enough money to purchase \x04\"%s\" \x01right now. (Price:\x05%d\x01)", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].iPrice);
+						CPrintToChat(client, "%s You don't have enough money to purchase \x04\"%s\" \x01right now. (Price:\x05%d\x01)", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].iPrice);
 						return;
 					}
 				}
-				else
-				{
-					PrintToChat(client, "%s You're already reach maximum to purchase \x04\"%s\" \x01in this round.", sZbuyPrefix, g_Weapons[i].sWeaponName);
-					return;
-				}
-			}
 			
-			// Not allow to purchase, but allow to pick up ("zmarketpurchasemax" = -1")
-			else
-			{
-				PrintToChat(client, "%s You cannot purchase \x04\"%s\"\x01, but you're allow to use it or pick it up", sZbuyPrefix, g_Weapons[i].sWeaponName);
-				return;
-			}
-		}
-		
-		else if(g_Weapons[i].bMulti)
-		{
-			int iBuyCount = GetPurchaseCount(client, g_Weapons[i].sWeaponName)
-			if(iBuyCount == 0)
-			{
-				if(iCash > g_Weapons[i].iPrice)
+				// Have limit
+				else if(g_Weapons[i].iMaxPurchase > 0)
 				{
-					SetEntProp(client, Prop_Send, "m_iAccount", iCash - g_Weapons[i].iPrice);
-					SetPurchaseCount(client, g_Weapons[i].sWeaponName, 1, true);
-					GivePlayerItem(client, g_Weapons[i].weapon);
-					PrintToChat(client, "%s You have bought \x04\"%s\" \x01Next time it will cost \x05x%f \x01to purchase, type command \x05\"%s\" \x01on chat to rebuy again", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].fMulti, g_Weapons[i].sWeaponCommand);
-					return;
+					int iBuyCount = GetPurchaseCount(client, g_Weapons[i].sWeaponName)
+					int iLeft = g_Weapons[i].iMaxPurchase - iBuyCount;
+					if(iLeft > 0)
+					{
+						if(iCash > g_Weapons[i].iPrice)
+						{
+							SetEntProp(client, Prop_Send, "m_iAccount", iCash - g_Weapons[i].iPrice);
+							SetPurchaseCount(client, g_Weapons[i].sWeaponName, 1, true);
+							GivePlayerItem(client, g_Weapons[i].sWeaponentity);
+							CPrintToChat(client, "%s You have bought \x04\"%s\" \x01you can re-purchase this item \x05%d \x01times. type command \x05\"%s\" \x01on chat to rebuy again", sZbuyPrefix, g_Weapons[i].sWeaponName, iBuyCount, g_Weapons[i].sWeaponCommand);
+							return;
+						}
+						else
+						{
+							CPrintToChat(client, "%s You don't have enough money to purchase \x04\"%s\" \x01right now. (Price:\x05%d\x01)", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].iPrice);
+							return;
+						}
+					}
+					else
+					{
+						CPrintToChat(client, "%s You're already reach maximum to purchase \x04\"%s\" \x01in this round.", sZbuyPrefix, g_Weapons[i].sWeaponName);
+						return;
+					}
 				}
+			
+				// Not allow to purchase, but allow to pick up ("zmarketpurchasemax" = -1")
 				else
 				{
-					PrintToChat(client, "%s You don't have enough money to purchase \x04\"%s\" \x01right now. (Price:\x05%d\x01)", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].iPrice);
+					CPrintToChat(client, "%s You cannot purchase \x04\"%s\"\x01, but you're allow to use it or pick it up", sZbuyPrefix, g_Weapons[i].sWeaponName);
 					return;
+				}
+			}
+		
+			else if(g_Weapons[i].bMulti)
+			{
+				int iBuyCount = GetPurchaseCount(client, g_Weapons[i].sWeaponName)
+				// Not buy anything yet
+				if(iBuyCount == 0)
+				{
+					// No limit
+					if(g_Weapons[i].iMaxPurchase == 0)
+					{
+						if(iCash > g_Weapons[i].iPrice)
+						{
+							SetEntProp(client, Prop_Send, "m_iAccount", iCash - g_Weapons[i].iPrice);
+							SetPurchaseCount(client, g_Weapons[i].sWeaponName, 1, true);
+							GivePlayerItem(client, g_Weapons[i].sWeaponentity);
+							CPrintToChat(client, "%s You have bought \x04\"%s\", \x01Next time it will cost \x05x%f \x01to purchase, type command \x05\"%s\" \x01on chat to rebuy again", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].fMulti, g_Weapons[i].sWeaponCommand);
+							return;
+						}
+						else
+						{
+							CPrintToChat(client, "%s You don't have enough money to purchase \x04\"%s\" \x01right now. (Price:\x05%d\x01)", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].iPrice);
+							return;
+						}
+					}
+					
+					else if(g_Weapons[i].iMaxPurchase > 0)
+					{
+						int iLeft = g_Weapons[i].iMaxPurchase - iBuyCount;
+						if(iLeft > 0)
+						{
+							if(iCash > g_Weapons[i].iPrice)
+							{
+								SetEntProp(client, Prop_Send, "m_iAccount", iCash - g_Weapons[i].iPrice);
+								SetPurchaseCount(client, g_Weapons[i].sWeaponName, 1, true);
+								GivePlayerItem(client, g_Weapons[i].sWeaponentity);
+								CPrintToChat(client, "%s You have bought \x04\"%s\", \x01you can re-purchase this item \x05%d \x01times. type command \x05\"%s\" \x01on chat to rebuy again", sZbuyPrefix, g_Weapons[i].sWeaponName, iBuyCount, g_Weapons[i].sWeaponCommand);
+								return;
+							}
+							else
+							{
+								CPrintToChat(client, "%s You don't have enough money to purchase \x04\"%s\" \x01right now. (Price:\x05%d\x01)", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].iPrice);
+								return;
+							}
+						}
+						else
+						{
+							CPrintToChat(client, "%s You're already reach maximum to purchase \x04\"%s\" \x01in this round.", sZbuyPrefix, g_Weapons[i].sWeaponName);
+							return;
+						}
+					}
+					// Not allow to purchase, but allow to pick up ("zmarketpurchasemax" = -1")
+					else
+					{
+						CPrintToChat(client, "%s You cannot purchase \x04\"%s\"\x01, but you're allow to use it or pick it up", sZbuyPrefix, g_Weapons[i].sWeaponName);
+						return;
+					}
+				}
+				// Already bought one
+				else
+				{
+					int iMultiPrice = RoundToNearest(g_Weapons[i].iPrice * g_Weapons[i].fMulti);
+					if(g_Weapons[i].iMaxPurchase == 0)
+					{
+						if(iCash > iMultiPrice)
+						{
+							SetEntProp(client, Prop_Send, "m_iAccount", iCash - iMultiPrice);
+							SetPurchaseCount(client, g_Weapons[i].sWeaponName, 1, true);
+							GivePlayerItem(client, g_Weapons[i].sWeaponentity);
+							CPrintToChat(client, "%s You have bought \x04\"%s\", \x01This time it has cost \x05x%f \x04(%d$)\x01to purchase, type command \x05\"%s\" \x01on chat to rebuy again", sZbuyPrefix, g_Weapons[i].sWeaponName, g_Weapons[i].fMulti, iMultiPrice, g_Weapons[i].sWeaponCommand);
+							return;
+						}
+						else
+						{
+							CPrintToChat(client, "%s You don't have enough money to purchase \x04\"%s\" \x01right now. (Price:\x05%d\x01)", sZbuyPrefix, g_Weapons[i].sWeaponName, iMultiPrice);
+							return;
+						}
+					}
+					else if(g_Weapons[i].iMaxPurchase > 0)
+					{
+						int iLeft = g_Weapons[i].iMaxPurchase - iBuyCount;
+						if(iLeft > 0)
+						{
+							if(iCash > iMultiPrice)
+							{
+								SetEntProp(client, Prop_Send, "m_iAccount", iCash - iMultiPrice);
+								SetPurchaseCount(client, g_Weapons[i].sWeaponName, 1, true);
+								GivePlayerItem(client, g_Weapons[i].sWeaponentity);
+								CPrintToChat(client, "%s You have bought \x04\"%s\", \x01you can re-purchase this item \x05%d \x01times. type command \x05\"%s\" \x01on chat to rebuy again", sZbuyPrefix, g_Weapons[i].sWeaponName, iBuyCount, g_Weapons[i].sWeaponCommand);
+								return;
+							}
+							else
+							{
+								CPrintToChat(client, "%s You don't have enough money to purchase \x04\"%s\" \x01right now. (Price:\x05%d\x01)", sZbuyPrefix, g_Weapons[i].sWeaponName, iMultiPrice);
+								return;
+							}
+						}
+						else
+						{
+							CPrintToChat(client, "%s You're already reach maximum to purchase \x04\"%s\" \x01in this round.", sZbuyPrefix, g_Weapons[i].sWeaponName);
+							return;
+						}
+					}
+					// Not allow to purchase, but allow to pick up ("zmarketpurchasemax" = -1")
+					else
+					{
+						CPrintToChat(client, "%s You cannot purchase \x04\"%s\"\x01, but you're allow to use it or pick it up", sZbuyPrefix, g_Weapons[i].sWeaponName);
+						return;
+					}
 				}
 			}
 		}
@@ -312,7 +511,7 @@ int GetPurchaseCount(int client, const char[] weapon)
 }
 
 
-void ZMarketResetPurchaseCount(int client)
+void ZBuyResetPurchaseCount(int client)
 {
 	if (g_hZBuPurchaseCount[client] != INVALID_HANDLE)
 	{
@@ -320,3 +519,20 @@ void ZMarketResetPurchaseCount(int client)
 	}
 }
 
+stock bool IsWeaponInConfigFile(const char[] weapon)
+{
+	int iFound = 0;
+	for (int i = 0; i < g_iWeapons; i++)
+	{
+		char sTemp[64];
+		Format(sTemp, sizeof(sTemp), "%s", g_Weapons[i].sWeaponentity)
+		if(StrEqual(weapon, sTemp, false))
+		{
+			iFound++; 
+			return true;
+		}
+	}
+	
+	if(iFound == 0)
+		return false;
+}
